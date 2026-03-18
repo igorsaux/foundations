@@ -1,0 +1,33 @@
+// Copyright (C) 2026 Igor Spichkin
+// SPDX-License-Identifier: MPL-2.0
+
+pub const Odor = enum(u8) {
+    none,
+    acrid,
+    pungent,
+    metallic,
+    ethereal,
+    aldehydic,
+    sulphurous,
+    phenolic,
+    solvent,
+    ozonic,
+    putrid,
+    rancid,
+    musty,
+    ammoniacal,
+    musky,
+    fermented,
+    floral,
+    herbaceous,
+    woody,
+    camphoraceous,
+    terpene,
+    citric,
+    spicy,
+    aromatic,
+    estery,
+    sweet,
+    smoky,
+    nutty,
+};
