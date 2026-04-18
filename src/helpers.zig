@@ -4,6 +4,7 @@
 const std = @import("std");
 
 const constants = @import("constants.zig");
+const Contents = @import("contents.zig").Contents;
 const Molecule = @import("molecule_id.zig").MoleculeId;
 
 /// Compute pH of a liquid phase from its composition.
@@ -87,4 +88,20 @@ pub inline fn computePhasePH(moles: []const f64, volume: f64) f64 {
     }
 
     return @floatCast(ph);
+}
+
+pub inline fn resetStdAir(dst: *Contents, max_volume: f64) void {
+    const headspace = dst.getGasVolume(max_volume);
+
+    @memset(dst.gas.molecules, 0.0);
+
+    const total_moles = (constants.P_std * (headspace / 1000.0)) / (8.314 * constants.T_std);
+
+    if (!constants.isNegligible(total_moles)) {
+        dst.gas.addMolecule(.nitrogen, total_moles * 0.78084);
+        dst.gas.addMolecule(.oxygen, total_moles * 0.20946);
+        dst.gas.addMolecule(.argon, total_moles * 0.00934);
+        dst.gas.addMolecule(.carbon_dioxide, total_moles * 0.0004);
+        dst.gas.addMolecule(.oxidane, total_moles * 0.015);
+    }
 }

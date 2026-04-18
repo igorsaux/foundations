@@ -2386,22 +2386,6 @@ pub const Contents = struct {
 
 const MAX_VOLUME: f64 = 3.0;
 
-fn resetStdAir(dst: *Contents, max_volume: f64) void {
-    const headspace = dst.getGasVolume(max_volume);
-
-    @memset(dst.gas.molecules, 0.0);
-
-    const total_moles = (constants.P_std * (headspace / 1000.0)) / (8.314 * constants.T_std);
-
-    if (!constants.isNegligible(total_moles)) {
-        dst.gas.addMolecule(.nitrogen, total_moles * 0.78084);
-        dst.gas.addMolecule(.oxygen, total_moles * 0.20946);
-        dst.gas.addMolecule(.argon, total_moles * 0.00934);
-        dst.gas.addMolecule(.carbon_dioxide, total_moles * 0.0004);
-        dst.gas.addMolecule(.oxidane, total_moles * 0.015);
-    }
-}
-
 test "Just water" {
     var contents = try Contents.init(std.testing.allocator);
     defer contents.deinit(std.testing.allocator);
@@ -2526,7 +2510,7 @@ test "Tight water container and air" {
     defer dst.deinit(std.testing.allocator);
 
     for (0..5) |_| {
-        resetStdAir(&src, V_container);
+        helpers.resetStdAir(&src, V_container);
 
         try src.setTemperature(std.testing.allocator, constants.cToK(25), V_container);
         try src.updatePhaseTransitions(std.testing.allocator, 0.1, V_container);
@@ -2553,7 +2537,7 @@ test "90% water container and air" {
     defer dst.deinit(std.testing.allocator);
 
     for (0..5) |_| {
-        resetStdAir(&src, V_container);
+        helpers.resetStdAir(&src, V_container);
 
         try src.setTemperature(std.testing.allocator, constants.cToK(25), V_container);
         try src.updatePhaseTransitions(std.testing.allocator, 0.1, V_container);
@@ -2658,7 +2642,7 @@ test "Water and open air" {
     try contents.setTemperature(std.testing.allocator, constants.cToK(25), V_container);
 
     for (0..100) |_| {
-        resetStdAir(&contents, V_container);
+        helpers.resetStdAir(&contents, V_container);
 
         try contents.updatePhaseTransitions(std.testing.allocator, 0.1, V_container);
         try contents.settle(std.testing.allocator);
@@ -2686,19 +2670,19 @@ test "Water pouring" {
     var dst = try Contents.init(std.testing.allocator);
     defer dst.deinit(std.testing.allocator);
 
-    resetStdAir(&dst, V_dst);
+    helpers.resetStdAir(&dst, V_dst);
     try dst.setTemperature(std.testing.allocator, constants.cToK(25), V_dst);
 
     try std.testing.expectEqual(1, src.liquids.items.len);
     try std.testing.expectEqual(0, dst.liquids.items.len);
 
     for (0..10) |_| {
-        resetStdAir(&src, V_src);
+        helpers.resetStdAir(&src, V_src);
         try src.updatePhaseTransitions(std.testing.allocator, 0.1, V_src);
         try src.settle(std.testing.allocator);
         src.updatePressure(V_src);
 
-        resetStdAir(&dst, V_dst);
+        helpers.resetStdAir(&dst, V_dst);
         try dst.updatePhaseTransitions(std.testing.allocator, 0.1, V_dst);
         try dst.settle(std.testing.allocator);
         dst.updatePressure(V_dst);

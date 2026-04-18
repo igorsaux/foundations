@@ -2379,9 +2379,11 @@ pub const MultiPhaseODESolver = struct {
         _ = solid_idx;
 
         const delta_H = getReactionEnthalpy(rxn);
-        // Temperature-corrected Ksp via van't Hoff (reference = 298.15 K)
-        const Ksp_T = dsl.Ksp * @exp(-delta_H / constants.R *
-            (1.0 / state.temperature - 1.0 / dsl.T_ref));
+
+        // Clamp temperature to prevent division by zero and Ksp_T underflow
+        const safe_temp = @max(1.0, state.temperature);
+        const Ksp_T = @max(1e-300, dsl.Ksp * @exp(-delta_H / constants.R *
+            (1.0 / safe_temp - 1.0 / dsl.T_ref)));
 
         // Current ion activity product Q
         const c_cation = state.getLiquidConcentration(liquid_idx, dsl.ions[0].molecule);
@@ -2458,12 +2460,18 @@ pub const MultiPhaseODESolver = struct {
             return 1.0;
         }
 
+        // The Davies equation is empirically valid only up to I ≈ 0.5 M.
+        // For highly concentrated solutions or nearly dry phases, the linear term (-0.3 * I)
+        // causes log_gamma to grow unboundedly positive, resulting in infinite activity.
+        // Clamp the effective ionic strength to prevent mathematical explosion.
+        const effective_I = @min(ionic_strength, 0.5);
+
         const A: f64 = 0.509;
         const z: f64 = @floatFromInt(charge);
         const z_sq = z * z;
 
-        const sqrt_I = @sqrt(ionic_strength);
-        const log_gamma = -A * z_sq * (sqrt_I / (1.0 + sqrt_I) - 0.3 * ionic_strength);
+        const sqrt_I = @sqrt(effective_I);
+        const log_gamma = -A * z_sq * (sqrt_I / (1.0 + sqrt_I) - 0.3 * effective_I);
 
         return std.math.pow(f64, 10.0, log_gamma);
     }
@@ -2476,9 +2484,6 @@ pub const MultiPhaseODESolver = struct {
         state: *const PhaseState,
         phase_idx: usize,
     ) f64 {
-        // Homogeneous nucleation: requires significant supersaturation
-        // Critical supersaturation ratio typically S_crit > 5-100
-
         const c_cation = state.getLiquidConcentration(phase_idx, dsl.ions[0].molecule);
         const c_anion = state.getLiquidConcentration(phase_idx, dsl.ions[1].molecule);
 
@@ -2497,9 +2502,11 @@ pub const MultiPhaseODESolver = struct {
         const Q_activity = Q * gamma_product;
 
         const delta_H = getReactionEnthalpy(rxn);
-        // Temperature-corrected Ksp
-        const Ksp_T = dsl.Ksp * @exp(-delta_H / constants.R *
-            (1.0 / state.temperature - 1.0 / dsl.T_ref));
+
+        // Clamp temperature to prevent division by zero and Ksp_T underflow
+        const safe_temp = @max(1.0, state.temperature);
+        const Ksp_T = @max(1e-300, dsl.Ksp * @exp(-delta_H / constants.R *
+            (1.0 / safe_temp - 1.0 / dsl.T_ref)));
 
         const saturation = Q_activity / Ksp_T;
 
@@ -3116,6 +3123,54 @@ test "NaCl dissociation" {
 
     try std.testing.expectEqual(1, contents.liquids.items.len);
     try std.testing.expectEqual(0, contents.solids.items.len);
+}
+
+test "Ions in dry contents" {
+    var src = try Contents.init(std.testing.allocator);
+    defer src.deinit(std.testing.allocator);
+
+    try src.addLiquid(std.testing.allocator, .oxidane, MoleculeId.oxidane.molesPerLiter() * 0.025);
+    try src.addSolid(std.testing.allocator, .sodium_chloride, MoleculeId.sodium_chloride.molesPerLiter() * 0.025, 2.5e-5);
+
+    helpers.resetStdAir(&src, MAX_VOLUME);
+    try src.setTemperature(std.testing.allocator, constants.cToK(25), MAX_VOLUME);
+
+    var solver = MultiPhaseODESolver.init(std.testing.allocator);
+    defer solver.deinit();
+
+    const REACTIONS = &.{ NACL_WATER_DISSOCIATION, CACO_WATER_DISSOLUTION };
+
+    for (0..3) |_| {
+        try src.updatePhaseTransitions(std.testing.allocator, 0.1, MAX_VOLUME);
+        try solver.integrate(std.testing.allocator, REACTIONS, &src, 0.1, MAX_VOLUME);
+        try src.settle(std.testing.allocator);
+    }
+
+    try std.testing.expectEqual(1, src.liquids.items.len);
+    try std.testing.expectEqual(1, src.solids.items.len);
+
+    var dst = try Contents.init(std.testing.allocator);
+    defer dst.deinit(std.testing.allocator);
+    helpers.resetStdAir(&dst, MAX_VOLUME);
+    try dst.setTemperature(std.testing.allocator, constants.cToK(25), MAX_VOLUME);
+
+    _ = try src.transferLiquidVolume(std.testing.allocator, &dst, std.math.inf(f64));
+
+    for (0..1) |_| {
+        helpers.resetStdAir(&src, MAX_VOLUME);
+
+        try src.updatePhaseTransitions(std.testing.allocator, 0.1, MAX_VOLUME);
+        try solver.integrate(std.testing.allocator, REACTIONS, &src, 0.1, MAX_VOLUME);
+        try src.settle(std.testing.allocator);
+
+        helpers.resetStdAir(&dst, MAX_VOLUME);
+
+        try dst.updatePhaseTransitions(std.testing.allocator, 0.1, MAX_VOLUME);
+        try solver.integrate(std.testing.allocator, REACTIONS, &dst, 0.1, MAX_VOLUME);
+        try dst.settle(std.testing.allocator);
+    }
+
+    try std.testing.expect(std.math.isFinite(dst.getTemperature()));
 }
 
 test "NaCl evaporation" {
