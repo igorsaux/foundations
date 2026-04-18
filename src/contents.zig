@@ -3025,3 +3025,29 @@ test "Ammonia absorption by water" {
     const total_final = final_gas_nh3 + final_liquid_nh3;
     try std.testing.expectApproxEqAbs(initial_nh3, total_final, 1e-9);
 }
+
+test "Ions form single phase" {
+    var src = try Contents.init(std.testing.allocator);
+    defer src.deinit(std.testing.allocator);
+
+    try src.addLiquid(std.testing.allocator, .oxidane, MoleculeId.oxidane.molesPerLiter() * 0.025);
+    try src.addLiquid(std.testing.allocator, .chloride_ion, 0.0090);
+    try src.addLiquid(std.testing.allocator, .sodium_ion, 0.0090);
+
+    helpers.resetStdAir(&src, MAX_VOLUME);
+    try src.setTemperature(std.testing.allocator, constants.cToK(25), MAX_VOLUME);
+
+    var dst = try Contents.init(std.testing.allocator);
+    defer dst.deinit(std.testing.allocator);
+
+    for (0..10) |_| {
+        _ = try src.transferLiquidVolume(std.testing.allocator, &dst, 0.0001);
+
+        helpers.resetStdAir(&src, MAX_VOLUME);
+
+        try src.updatePhaseTransitions(std.testing.allocator, 0.1, MAX_VOLUME);
+        try src.settle(std.testing.allocator);
+    }
+
+    try std.testing.expectEqual(1, dst.liquids.items.len);
+}

@@ -266,7 +266,27 @@ pub const Molecule = struct {
     /// 3. Full miscibility override: if both molecules have no known solid
     ///    form limit (water_solubility = null) AND share H-bonding capability,
     ///    they are considered miscible (e.g., water + ethanol, water + methanol).
+    ///
+    /// 4. Ion override: Ions are fully miscible with each other and with highly
+    ///    polar, hydrogen-bonding solvents (like water).
     pub inline fn areMiscible(a: Molecule, b: Molecule) bool {
+        // Ion override: Ions are fully miscible with each other in a solution
+        if (a.is_ion and b.is_ion) {
+            return true;
+        }
+
+        // Ion override: Ions are highly miscible with polar, hydrogen-bonding solvents (like water).
+        // We identify these solvents by their lack of a water solubility limit and H-bonding ability.
+        if (a.is_ion) {
+            if (b.state == .liquid and b.water_solubility == null and b.hbd > 0 and b.hba > 0) {
+                return true;
+            }
+        } else if (b.is_ion) {
+            if (a.state == .liquid and a.water_solubility == null and a.hbd > 0 and a.hba > 0) {
+                return true;
+            }
+        }
+
         const delta_a: f64 = @floatCast(a.getHildebrand());
         const delta_b: f64 = @floatCast(b.getHildebrand());
         const delta_diff = @abs(delta_a - delta_b);
