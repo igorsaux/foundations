@@ -71,3 +71,6 @@ pub const DEFAULT_PRECIPITATION_DIAMETER: f64 = 1e-4;
 /// Default particle diameter (meters) for solids formed by freezing.
 /// 1 cm, representing bulk solidification rather than fine crystals.
 pub const DEFAULT_FREEZING_DIAMETER: f64 = 0.01;
+
+/// For solver
+pub const MAX_RATE = 1e6;

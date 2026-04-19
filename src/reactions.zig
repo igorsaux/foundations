@@ -866,7 +866,9 @@ pub const PhaseState = struct {
             return 0.0;
         }
 
-        return this.liquid_moles[phase_idx][@intFromEnum(mol)] / vol;
+        const conc = this.liquid_moles[phase_idx][@intFromEnum(mol)] / vol;
+
+        return @min(conc, 100.0);
     }
 
     /// Get partial pressure (Pa) of molecule in gas phase
@@ -1193,12 +1195,9 @@ pub const MultiPhaseODESolver = struct {
                             }
                         },
                         .dissolution => |dsl| {
-                            if (!this.isEffectivelyDryLiquidPhase(state, liquid_idx, loc.liquid_solvent)) {
-                                continue;
-                            }
-
                             const solid_idx = @intFromEnum(dsl.solid.molecule);
-                            const d = this.enforceDrySaltPrecipitation(state, liquid_idx, solid_idx, &dsl.ions, dsl.solid.coefficient);
+                            const d = this.enforceDissolutionSolubility(dsl, state, liquid_idx, solid_idx, loc.liquid_solvent, rxn);
+
                             this.applyEquilibriumHeat(rxn, d, state);
 
                             if (@abs(d) > max_delta) {
@@ -1430,6 +1429,67 @@ pub const MultiPhaseODESolver = struct {
         const solvent_volume = this.getPureSolventVolume(state, phase_idx, solvent);
 
         return solvent_volume < constants.MIN_VOLUME;
+    }
+
+    inline fn enforceDissolutionSolubility(
+        this: *const MultiPhaseODESolver,
+        dsl: KineticsType.Dissolution,
+        state: *PhaseState,
+        liquid_idx: usize,
+        solid_idx: usize,
+        solvent: MoleculeId,
+        rxn: *const MultiPhaseReaction,
+    ) f64 {
+        if (this.isEffectivelyDryLiquidPhase(state, liquid_idx, solvent)) {
+            return this.enforceDrySaltPrecipitation(state, liquid_idx, solid_idx, &dsl.ions, dsl.solid.coefficient);
+        }
+
+        const vol = state.liquid_volumes[liquid_idx];
+
+        if (vol < constants.MIN_VOLUME) {
+            return 0.0;
+        }
+
+        const delta_H = getReactionEnthalpy(rxn);
+        const safe_temp = @max(1.0, state.temperature);
+        const Ksp_T = @max(1e-300, dsl.Ksp * @exp(-delta_H / constants.R * (1.0 / safe_temp - 1.0 / dsl.T_ref)));
+
+        const cat_idx = @intFromEnum(dsl.ions[0].molecule);
+        const an_idx = @intFromEnum(dsl.ions[1].molecule);
+
+        const n_cat = state.liquid_moles[liquid_idx][cat_idx];
+        const n_an = state.liquid_moles[liquid_idx][an_idx];
+
+        const c_cat = n_cat / vol;
+        const c_an = n_an / vol;
+
+        const Q = c_cat * c_an;
+
+        // 1% tolerance
+        if (Q <= Ksp_T * 1.01) {
+            return 0.0;
+        }
+
+        const b = -(c_cat + c_an);
+        const c = Q - Ksp_T;
+        const disc = b * b - 4.0 * c;
+
+        if (disc < 0) {
+            return 0.0;
+        }
+
+        const x_conc = (-b - @sqrt(disc)) / 2.0;
+        const precip_moles = x_conc * vol;
+
+        if (precip_moles <= constants.MIN_MOLES) {
+            return 0.0;
+        }
+
+        state.liquid_moles[liquid_idx][cat_idx] = @max(0.0, n_cat - precip_moles * dsl.ions[0].coefficient);
+        state.liquid_moles[liquid_idx][an_idx] = @max(0.0, n_an - precip_moles * dsl.ions[1].coefficient);
+        state.solid_moles[solid_idx] += precip_moles * dsl.solid.coefficient;
+
+        return -precip_moles;
     }
 
     inline fn enforceDrySaltPrecipitation(
@@ -1817,10 +1877,15 @@ pub const MultiPhaseODESolver = struct {
                         continue;
                     }
 
+                    const liquid_vol_m3 = state.liquid_volumes[liquid_idx] / 1000.0;
+                    const max_wetted_area = liquid_vol_m3 / 1e-5;
+
                     switch (rxn.base.kinetics) {
                         .strong_electrolyte => |se| {
                             const solid_idx = @intFromEnum(se.solid.molecule);
-                            const area = state.solid_surface_areas[solid_idx];
+                            const total_area = state.solid_surface_areas[solid_idx];
+
+                            const area = @min(total_area, max_wetted_area);
 
                             if (area < constants.MIN_AREA) {
                                 continue;
@@ -1838,7 +1903,9 @@ pub const MultiPhaseODESolver = struct {
                         },
                         .dissolution => |dsl| {
                             const solid_idx = @intFromEnum(dsl.solid.molecule);
-                            const area = state.solid_surface_areas[solid_idx];
+                            const total_area = state.solid_surface_areas[solid_idx];
+
+                            const area = @min(total_area, max_wetted_area);
 
                             const rate = this.computeDissolutionRate(rxn, dsl, state, liquid_idx, solid_idx, area);
 
@@ -1852,7 +1919,9 @@ pub const MultiPhaseODESolver = struct {
                         },
                         else => {
                             const solid_idx = @intFromEnum(loc.solid);
-                            const area = state.solid_surface_areas[solid_idx];
+                            const total_area = state.solid_surface_areas[solid_idx];
+
+                            const area = @min(total_area, max_wetted_area);
 
                             if (area < constants.MIN_AREA) {
                                 continue;
@@ -2309,6 +2378,8 @@ pub const MultiPhaseODESolver = struct {
             v = @max(0.0, v);
         }
 
+        v = std.math.clamp(v, -constants.MAX_RATE, constants.MAX_RATE);
+
         return v;
     }
 
@@ -2358,7 +2429,7 @@ pub const MultiPhaseODESolver = struct {
         } else {
             // Supersaturated: crystallization (reverse)
             const k_cryst = se.k_dissolve * 0.1;
-            const driving_force = saturation - 1.0;
+            const driving_force = @min(saturation - 1.0, 10.0);
             // Crystallization is less enhanced by stirring than dissolution (max 4x)
             const stirring_factor = std.math.pow(f64, 4.0, state.stirring);
 
@@ -2414,9 +2485,10 @@ pub const MultiPhaseODESolver = struct {
         } else {
             // Precipitation - less affected by stirring (max 4x)
             const k_precipitate = dsl.k_dissolve * 0.1;
+            const driving_force = @min(saturation - 1.0, 10.0);
             const stirring_factor = std.math.pow(f64, 4.0, state.stirring);
 
-            return -k_precipitate * surface_area * (saturation - 1.0) * stirring_factor;
+            return -k_precipitate * surface_area * driving_force * stirring_factor;
         }
     }
 
