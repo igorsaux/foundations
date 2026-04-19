@@ -67,7 +67,7 @@ pub const LiquidPhase = struct {
             // For gases and solids use partial molar volume
             if (mid.getPartialMolarVolume()) |pmv| {
                 total += moles * pmv / 1000.0; // cm³ -> L
-            } else {
+            } else if (!mid.isIon()) {
                 // V_i = n_i * MW_i / ρ_i [g / (g/cm³) = cm³ = mL]
                 // Convert mL to L by dividing by 1000.
                 total += moles * mid.getWeight() / mid.getDensity() / 1000.0;
