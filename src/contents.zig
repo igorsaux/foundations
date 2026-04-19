@@ -598,18 +598,9 @@ pub const Contents = struct {
         }
 
         const solid = &this.solids.items[phase_index];
-        const total_volume = solid.getVolume();
-
-        if (total_volume < constants.MIN_VOLUME) {
-            return 0.0;
-        }
 
         const d = solid.particle_diameter;
         const particle_volume_L = (std.math.pi / 6.0) * d * d * d * 1000.0;
-
-        if (particle_volume_L < constants.MIN_VOLUME) {
-            return 0.0;
-        }
 
         const total_particles = solid.getParticleCount();
         const requested_particles = @floor(volume / particle_volume_L);
