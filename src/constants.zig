@@ -22,6 +22,9 @@ pub const Kw: f64 = 1e-14;
 /// Temperature for standard conditions (K)
 pub const T_std: f64 = 298.15;
 
+/// Standard gravitational acceleration, m/s^2.
+pub const G0: f64 = 9.80665;
+
 /// Minimum volume threshold below which a substance is considered absent.
 pub const MIN_VOLUME: f64 = 1e-12;
 

@@ -2373,6 +2373,96 @@ pub const Contents = struct {
 
         return weighted_k / total_volume;
     }
+
+    /// Computes the rate of change of stratification (dS/dt) in 1/s.
+    ///
+    /// This is a pure function of the current physical state (liquid phases,
+    /// temperature, stirring). The caller maintains the stratification value S
+    /// externally and updates it: S_new = S + dSdt * dt
+    ///
+    /// The returned rate is always non-negative (stratification only increases
+    /// under centrifugation; mixing or diffusion are handled by the caller
+    /// through stirring and dt).
+    ///
+    /// Arguments:
+    ///   g - relative centrifugal force (1.0 = Earth gravity).
+    ///
+    /// Returns: dS/dt in 1/s. Multiply by dt to get delta S.
+    pub inline fn getStratificationRate(this: *const Contents, g: f64) f64 {
+        if (g <= 0.0 or this.liquids.items.len < 2) {
+            return 0.0;
+        }
+
+        const T = this.getTemperature();
+        var total_volume: f64 = 0.0;
+        var visc_weight: f64 = 0.0;
+
+        for (this.liquids.items) |*phase| {
+            const vol = phase.getVolume();
+
+            if (vol < constants.MIN_VOLUME) {
+                continue;
+            }
+
+            total_volume += vol;
+            visc_weight += vol * phase.getViscosity(T);
+        }
+
+        if (total_volume < constants.MIN_VOLUME) {
+            return 0.0;
+        }
+
+        const eta_avg = visc_weight / total_volume;
+
+        if (eta_avg <= 0.0) {
+            return 0.0;
+        }
+
+        // RMS density contrast between adjacent layers
+        var drho_sq: f64 = 0.0;
+        var pair_count: usize = 0;
+
+        for (1..this.liquids.items.len) |i| {
+            const dr = this.liquids.items[i].getDensity() - this.liquids.items[i - 1].getDensity();
+
+            if (dr > 0.0) {
+                drho_sq += dr * dr;
+                pair_count += 1;
+            }
+        }
+
+        if (pair_count == 0) {
+            return 0.0;
+        }
+
+        const delta_rho = @sqrt(drho_sq / @as(f64, @floatFromInt(pair_count)));
+        const delta_rho_si = delta_rho * 1000.0; // g/cm^3 -> kg/m^3
+
+        // Characteristic column height
+        const L = if (this.gas_contact_area > 0.0)
+            (total_volume * 0.001) / this.gas_contact_area
+        else
+            std.math.cbrt(total_volume * 0.001);
+
+        // Characteristic droplet/domain radius.
+        // Unstirred liquids have large domains (~1 mm).
+        // Vigorous stirring breaks them down to ~10-100 um.
+        const r0: f64 = 1.0e-3; // 1 mm baseline
+        const stirring_factor = std.math.pow(f64, 1.0 - this.stirring, 2.0);
+        const r_eff = @max(r0 * stirring_factor, 1.0e-5); // clamp to 10 um minimum
+
+        // Stokes settling velocity: v = (2/9) * dRho * g * r^2 / eta
+        const v_settle = (2.0 / 9.0) * (delta_rho_si * g * constants.G0 * r_eff * r_eff) / eta_avg;
+
+        // Stratification rate: fraction of column that separates per second
+        const raw_rate = v_settle / L;
+
+        // Turbulent mixing suppression. At full stirring (1.0) rate drops by 1000x
+        const stirring_suppression = std.math.pow(f64, 1000.0, this.stirring);
+        const rate = raw_rate / stirring_suppression;
+
+        return rate;
+    }
 };
 
 const MAX_VOLUME: f64 = 3.0;

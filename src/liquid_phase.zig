@@ -148,6 +148,58 @@ pub const LiquidPhase = struct {
         return total;
     }
 
+    /// Computes the dynamic viscosity of the liquid phase in Pa*s.
+    ///
+    /// Uses the logarithmic mixing rule (Grunberg-Nissan):
+    /// ln(eta_mix) = sum(x_i * ln(eta_i))
+    ///
+    /// Components with zero intrinsic viscosity (ions, dissolved gases,
+    /// solids) are excluded from the sum; their presence dilutes the
+    /// liquid matrix implicitly through the mole fractions of the
+    /// viscous components.
+    pub inline fn getViscosity(this: *const LiquidPhase, temperature: f64) f64 {
+        var total_moles: f64 = 0.0;
+
+        for (this.solutes) |m| {
+            total_moles += m;
+        }
+
+        if (constants.isNegligible(total_moles)) {
+            return 0.0;
+        }
+
+        var ln_eta: f64 = 0.0;
+        var has_viscous: bool = false;
+
+        for (0..this.solutes.len) |i| {
+            const moles = this.solutes[i];
+
+            if (constants.isNegligible(moles)) {
+                continue;
+            }
+
+            const mol: MoleculeId = @enumFromInt(i);
+            const eta = mol.getViscosity(temperature);
+
+            if (eta <= 0.0) {
+                continue;
+            }
+
+            const x = moles / total_moles;
+
+            ln_eta += x * @log(eta);
+            has_viscous = true;
+        }
+
+        if (!has_viscous) {
+            // Pure electrolyte / suspension with no liquid solvent data.
+            // Return water viscosity at the requested T as a safe fallback.
+            return MoleculeId.oxidane.getViscosity(temperature);
+        }
+
+        return @exp(ln_eta);
+    }
+
     /// Returns the molecule that occupies the largest volume in the phase.
     pub inline fn getPrimaryComponent(this: *const LiquidPhase) ?MoleculeId {
         var max_volume: f64 = 0.0;

@@ -78,9 +78,9 @@ pub const Molecule = struct {
     /// Used in the cryoscopic equation: ΔT_f = K_f * m
     /// where K_f = R * T_f² * M / ΔH_fus
     delta_hfus: ?f64 = null,
-    /// Molar heat capacity at constant pressure (C_p) in J/(mol·K).
+    /// Molar heat capacity at constant pressure (C_p) in J/(mol*K).
     /// Determines how much thermal energy is required to raise the temperature.
-    /// Default is approx 50 J/(mol·K) (typical for organic substances).
+    /// Default is approx 50 J/(mol*K) (typical for organic substances).
     heat_capacity: f64 = 50.0,
     /// Color of the molecule.
     color: Color = .transparent,
@@ -104,6 +104,9 @@ pub const Molecule = struct {
     /// Partial molar volume in cm³/mol at infinite dilution in water at 25°C.
     /// Used to calculate the volume occupied by dissolved gases/solids.
     partial_molar_volume: ?f64 = null,
+    /// Dynamic viscosity of the pure liquid in Pa*s at 25°C.
+    /// Zero for gases, ions, and solids that do not form a continuous liquid phase.
+    viscosity: f64 = 0.0,
 
     /// Calculates the net molecular charge at a given pH using the
     /// Henderson-Hasselbalch equation.
@@ -344,5 +347,40 @@ pub const Molecule = struct {
         const ln_ratio = -hvap_j / constants.R * (1.0 / temperature - 1.0 / T_b);
 
         return constants.P_std * @exp(ln_ratio);
+    }
+
+    /// Returns the dynamic viscosity in Pa*s at the given temperature.
+    ///
+    /// Strategy:
+    /// 1. If a tabulated viscosity exists (viscosity > 0), apply the Andrade
+    ///    temperature correction using the enthalpy of vaporization:
+    ///      eta(T) = eta(298K) * exp[(dH_vap / R) * (1/T - 1/298.15)]
+    ///
+    /// 2. If no tabulated value exists but delta_hvap is known, fall back to
+    ///    Eyring absolute rate theory (order-of-magnitude estimate):
+    ///      eta(T) = (h * N_A / V_m) * exp(0.408 * dH_vap / (R*T))
+    ///    where V_m = M / rho (molar volume in cm^3/mol, converted to m^3/mol).
+    ///
+    /// 3. Otherwise returns 0.0 (non-liquid or insufficient data).
+    pub inline fn getViscosity(this: Molecule, temperature: f64) f64 {
+        const eta_25 = this.viscosity;
+
+        // Tabulated value available: Andrade correction.
+        if (eta_25 > 0.0) {
+            const dH_vap = this.getDeltaHvapJ();
+            const T0 = 298.15;
+
+            return eta_25 * @exp((dH_vap / constants.R) * (1.0 / temperature - 1.0 / T0));
+        }
+
+        // No tabulated value: Eyring fallback.
+        const hvap_kj = this.delta_hvap orelse return 0.0;
+        const vm_cm3 = this.weight / this.density; // cm^3/mol
+        const vm_m3 = vm_cm3 * 1.0e-6; // m^3/mol
+        const hvap_J = hvap_kj * 1000.0;
+        const pre = constants.h * constants.N_A / vm_m3; // Pa*s
+        const exponent = 0.408 * hvap_J / (constants.R * temperature);
+
+        return pre * @exp(exponent);
     }
 };
