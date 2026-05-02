@@ -2376,26 +2376,35 @@ pub const Contents = struct {
 
     /// Computes the rate of change of stratification (dS/dt) in 1/s.
     ///
-    /// This is a pure function of the current physical state (liquid phases,
-    /// temperature, stirring). The caller maintains the stratification value S
-    /// externally and updates it: S_new = S + dSdt * dt
+    /// Accounts for three physical mechanisms:
+    /// 1. Liquid-liquid coalescence (immiscible layers separating).
+    /// 2. Solid settling through liquid (Stokes law, using particle diameter).
+    /// 3. Solid-solid separation (denser solids sink below lighter ones).
     ///
-    /// The returned rate is always non-negative (stratification only increases
-    /// under centrifugation; mixing or diffusion are handled by the caller
-    /// through stirring and dt).
+    /// The caller maintains S externally: S_new = S + dSdt * dt
     ///
     /// Arguments:
-    ///   g - relative centrifugal force (1.0 = Earth gravity).
+    /// g - relative centrifugal force (1.0 = Earth gravity).
     ///
-    /// Returns: dS/dt in 1/s. Multiply by dt to get delta S.
+    /// Returns: dS/dt in 1/s. Always non-negative.
     pub inline fn getStratificationRate(this: *const Contents, g: f64) f64 {
-        if (g <= 0.0 or this.liquids.items.len < 2) {
+        if (g <= 0.0) {
             return 0.0;
         }
 
         const T = this.getTemperature();
-        var total_volume: f64 = 0.0;
+        const num_liquids = this.liquids.items.len;
+        const num_solids = this.solids.items.len;
+
+        // Need at least two condensed phases to have something to stratify.
+        if (num_liquids + num_solids < 2) {
+            return 0.0;
+        }
+
+        // Liquid properties
+        var liquid_volume: f64 = 0.0;
         var visc_weight: f64 = 0.0;
+        var liq_density_weight: f64 = 0.0;
 
         for (this.liquids.items) |*phase| {
             const vol = phase.getVolume();
@@ -2404,64 +2413,159 @@ pub const Contents = struct {
                 continue;
             }
 
-            total_volume += vol;
+            liquid_volume += vol;
             visc_weight += vol * phase.getViscosity(T);
+            liq_density_weight += vol * phase.getDensity();
         }
+
+        // Solid volumes (they occupy column height)
+        var solid_volume: f64 = 0.0;
+
+        for (this.solids.items) |*phase| {
+            const vol = phase.getVolume();
+
+            if (vol < constants.MIN_VOLUME) {
+                continue;
+            }
+
+            solid_volume += vol;
+        }
+
+        const total_volume = liquid_volume + solid_volume;
 
         if (total_volume < constants.MIN_VOLUME) {
             return 0.0;
         }
 
-        const eta_avg = visc_weight / total_volume;
+        // Average liquid viscosity. If no liquid is present, fall back to air
+        // viscosity (~1.8e-5 Pa*s). This is a rough approximation for dry
+        // granular separation; in practice solid-only systems behave differently.
+        const eta_avg = if (liquid_volume > 0.0)
+            visc_weight / liquid_volume
+        else
+            1.8e-5;
 
         if (eta_avg <= 0.0) {
             return 0.0;
         }
 
-        // RMS density contrast between adjacent layers
-        var drho_sq: f64 = 0.0;
-        var pair_count: usize = 0;
+        const liq_density_avg = if (liquid_volume > 0.0)
+            liq_density_weight / liquid_volume
+        else
+            0.0;
 
-        for (1..this.liquids.items.len) |i| {
-            const dr = this.liquids.items[i].getDensity() - this.liquids.items[i - 1].getDensity();
-
-            if (dr > 0.0) {
-                drho_sq += dr * dr;
-                pair_count += 1;
-            }
-        }
-
-        if (pair_count == 0) {
-            return 0.0;
-        }
-
-        const delta_rho = @sqrt(drho_sq / @as(f64, @floatFromInt(pair_count)));
-        const delta_rho_si = delta_rho * 1000.0; // g/cm^3 -> kg/m^3
-
-        // Characteristic column height
+        // Characteristic column height from contact area.
         const L = if (this.gas_contact_area > 0.0)
             (total_volume * 0.001) / this.gas_contact_area
         else
             std.math.cbrt(total_volume * 0.001);
 
-        // Characteristic droplet/domain radius.
-        // Unstirred liquids have large domains (~1 mm).
-        // Vigorous stirring breaks them down to ~10-100 um.
-        const r0: f64 = 1.0e-3; // 1 mm baseline
+        // Stirring shrinks domains and suppresses settling.
         const stirring_factor = std.math.pow(f64, 1.0 - this.stirring, 2.0);
-        const r_eff = @max(r0 * stirring_factor, 1.0e-5); // clamp to 10 um minimum
-
-        // Stokes settling velocity: v = (2/9) * dRho * g * r^2 / eta
-        const v_settle = (2.0 / 9.0) * (delta_rho_si * g * constants.G0 * r_eff * r_eff) / eta_avg;
-
-        // Stratification rate: fraction of column that separates per second
-        const raw_rate = v_settle / L;
-
-        // Turbulent mixing suppression. At full stirring (1.0) rate drops by 1000x
         const stirring_suppression = std.math.pow(f64, 1000.0, this.stirring);
-        const rate = raw_rate / stirring_suppression;
 
-        return rate;
+        var max_rate: f64 = 0.0;
+
+        // 1. Liquid-liquid stratification
+        if (num_liquids >= 2) {
+            var drho_sq: f64 = 0.0;
+            var pair_count: usize = 0;
+
+            for (1..num_liquids) |i| {
+                const dr = this.liquids.items[i].getDensity() -
+                    this.liquids.items[i - 1].getDensity();
+
+                if (dr > 0.0) {
+                    drho_sq += dr * dr;
+                    pair_count += 1;
+                }
+            }
+
+            if (pair_count > 0) {
+                const delta_rho = @sqrt(drho_sq / @as(f64, @floatFromInt(pair_count)));
+                const delta_rho_si = delta_rho * 1000.0; // g/cm^3 -> kg/m^3
+
+                // Domain radius for unstirred liquids (~1 mm), down to 10 um.
+                const r_eff = @max(1.0e-3 * stirring_factor, 1.0e-5);
+
+                const v_settle = (2.0 / 9.0) *
+                    (delta_rho_si * g * constants.G0 * r_eff * r_eff) / eta_avg;
+                const rate = (v_settle / L) / stirring_suppression;
+
+                max_rate = @max(max_rate, rate);
+            }
+        }
+
+        // 2. Solid settling through liquid
+        if (num_solids > 0 and liquid_volume > 0.0) {
+            for (this.solids.items) |*solid| {
+                const vol = solid.getVolume();
+
+                if (vol < constants.MIN_VOLUME) {
+                    continue;
+                }
+
+                const rho_solid = solid.molecule.getDensity();
+                const dr = @abs(rho_solid - liq_density_avg);
+
+                if (dr < 0.001) {
+                    // Neutrally buoyant, no settling drive.
+                    continue;
+                }
+
+                const dr_si = dr * 1000.0;
+                // Particle radius. Clamp to 1 um to avoid division by zero.
+                const r_particle = @max(solid.particle_diameter / 2.0, 1.0e-6);
+
+                // Stokes law for a rigid sphere in viscous fluid.
+                const v_settle = (2.0 / 9.0) *
+                    (dr_si * g * constants.G0 * r_particle * r_particle) / eta_avg;
+                const rate = (v_settle / L) / stirring_suppression;
+
+                max_rate = @max(max_rate, rate);
+            }
+        }
+
+        // 3. Solid-solid separation
+        // Denser solid particles sink below lighter ones. This uses the
+        // same Stokes form but with the smallest particle as bottleneck.
+        if (num_solids >= 2) {
+            var max_solid_drho: f64 = 0.0;
+            var min_r: f64 = std.math.inf(f64);
+
+            for (0..num_solids) |i| {
+                const rho_i = this.solids.items[i].molecule.getDensity();
+                const r_i = this.solids.items[i].particle_diameter / 2.0;
+
+                if (r_i > 0.0 and r_i < min_r) {
+                    min_r = r_i;
+                }
+
+                for (i + 1..num_solids) |j| {
+                    const dr = @abs(rho_i - this.solids.items[j].molecule.getDensity());
+
+                    if (dr > max_solid_drho) {
+                        max_solid_drho = dr;
+                    }
+                }
+            }
+
+            if (max_solid_drho > 0.0 and min_r < std.math.inf(f64)) {
+                const r_eff = @max(min_r * stirring_factor, 1.0e-6);
+                const dr_si = max_solid_drho * 1000.0;
+
+                // For solid-solid in a liquid medium, use liquid viscosity.
+                // For dry granular solids (no liquid), eta_avg is air viscosity
+                // which makes this very fast.
+                const v_settle = (2.0 / 9.0) *
+                    (dr_si * g * constants.G0 * r_eff * r_eff) / eta_avg;
+                const rate = (v_settle / L) / stirring_suppression;
+
+                max_rate = @max(max_rate, rate);
+            }
+        }
+
+        return max_rate;
     }
 };
 
@@ -3131,4 +3235,19 @@ test "Ions form single phase" {
     }
 
     try std.testing.expectEqual(1, dst.liquids.items.len);
+}
+
+test "Stratification rate of very fine graphite in water" {
+    var contents = try Contents.init(std.testing.allocator);
+    defer contents.deinit(std.testing.allocator);
+
+    try contents.addLiquid(std.testing.allocator, .oxidane, MoleculeId.oxidane.molesPerLiter());
+    try contents.addSolid(std.testing.allocator, .graphite, MoleculeId.graphite.molesPerLiter() * 0.1, 5e-8);
+    try contents.setTemperature(std.testing.allocator, constants.cToK(25), MAX_VOLUME);
+
+    try contents.settle(std.testing.allocator);
+
+    const rate = contents.getStratificationRate(1000.0);
+
+    try std.testing.expectApproxEqAbs(0.016, rate, 0.001);
 }
