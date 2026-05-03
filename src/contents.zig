@@ -1598,8 +1598,9 @@ pub const Contents = struct {
     /// 2. Redistributes solutes among immiscible phases (equilibratePhases)
     /// 3. Precipitates supersaturated species (checkPrecipitation)
     /// 4. Sorts liquid layers by density (lightest on top)
-    /// 5. Consolidates similar solid phases
-    /// 6. Removes empty solid phases
+    /// 5. Sorts solids layers by density (lightest on top)
+    /// 6. Consolidates similar solid phases
+    /// 7. Removes empty solid phases
     ///
     /// Call this after any batch modifications or when manual control is needed.
     /// High-level methods (addLiquid, setTemperature, etc.) call this automatically.
@@ -1608,6 +1609,7 @@ pub const Contents = struct {
         this.equilibratePhases();
         try this.checkPrecipitation(allocator);
         this.sortLiquidsByDensity();
+        this.sortSolidsByDensity();
         this.consolidateSolids(allocator);
         this.removeEmptySolidPhases(allocator);
     }
@@ -2286,6 +2288,15 @@ pub const Contents = struct {
         std.mem.sort(LiquidPhase, this.liquids.items, .{}, struct {
             fn lessThan(_: @TypeOf(.{}), lhs: LiquidPhase, rhs: LiquidPhase) bool {
                 return lhs.getDensity() < rhs.getDensity();
+            }
+        }.lessThan);
+    }
+
+    /// Sorts liquid layers by density, lightest (top) first.
+    inline fn sortSolidsByDensity(this: *Contents) void {
+        std.mem.sort(SolidPhase, this.solids.items, .{}, struct {
+            fn lessThan(_: @TypeOf(.{}), lhs: SolidPhase, rhs: SolidPhase) bool {
+                return lhs.molecule.getDensity() < rhs.molecule.getDensity();
             }
         }.lessThan);
     }
