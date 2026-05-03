@@ -2384,7 +2384,10 @@ pub const Contents = struct {
     /// The caller maintains S externally: S_new = S + dSdt * dt
     ///
     /// Arguments:
-    /// g - relative centrifugal force (1.0 = Earth gravity).
+    /// g - absolute acceleration in m/s^2. Pass constants.G0 for Earth gravity,
+    ///     or omega^2 * r for a centrifuge. If both gravity and centrifuge act
+    ///     along the same axis, pass their scalar sum. If they are perpendicular,
+    ///     pass the vector magnitude sqrt(g^2 + a_centrifuge^2).
     ///
     /// Returns: dS/dt in 1/s. Always non-negative.
     pub inline fn getStratificationRate(this: *const Contents, g: f64) f64 {
@@ -2489,7 +2492,7 @@ pub const Contents = struct {
                 const r_eff = @max(1.0e-3 * stirring_factor, 1.0e-5);
 
                 const v_settle = (2.0 / 9.0) *
-                    (delta_rho_si * g * constants.G0 * r_eff * r_eff) / eta_avg;
+                    (delta_rho_si * g * r_eff * r_eff) / eta_avg;
                 const rate = (v_settle / L) / stirring_suppression;
 
                 max_rate = @max(max_rate, rate);
@@ -2519,7 +2522,7 @@ pub const Contents = struct {
 
                 // Stokes law for a rigid sphere in viscous fluid.
                 const v_settle = (2.0 / 9.0) *
-                    (dr_si * g * constants.G0 * r_particle * r_particle) / eta_avg;
+                    (dr_si * g * r_particle * r_particle) / eta_avg;
                 const rate = (v_settle / L) / stirring_suppression;
 
                 max_rate = @max(max_rate, rate);
@@ -2558,7 +2561,7 @@ pub const Contents = struct {
                 // For dry granular solids (no liquid), eta_avg is air viscosity
                 // which makes this very fast.
                 const v_settle = (2.0 / 9.0) *
-                    (dr_si * g * constants.G0 * r_eff * r_eff) / eta_avg;
+                    (dr_si * g * r_eff * r_eff) / eta_avg;
                 const rate = (v_settle / L) / stirring_suppression;
 
                 max_rate = @max(max_rate, rate);
@@ -3247,7 +3250,7 @@ test "Stratification rate of very fine graphite in water" {
 
     try contents.settle(std.testing.allocator);
 
-    const rate = contents.getStratificationRate(1000.0);
+    const rate = contents.getStratificationRate(constants.G0 + 1000.0 * constants.G0);
 
     try std.testing.expectApproxEqAbs(0.016, rate, 0.001);
 }
